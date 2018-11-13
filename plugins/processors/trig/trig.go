@@ -5,33 +5,38 @@ package trig
 import (
 	"fmt"
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/metric"
 	"github.com/influxdata/telegraf/plugins/processors"
+	"strings"
+	"time"
 )
+
+// Point represents an InfluxDB point/row, and defines a "schema"
+// Tags and Fields hold the column names of all tags and fields in the measurement/table
+type Point struct {
+	MeasurementName string
+	Tags            map[string]string
+	Fields          map[string]interface{}
+	Timestamp       time.Time
+}
+
+func NewPoint(name string, tags map[string]string, fields map[string]interface{}, timestamp ...time.Time) Point {
+	var t time.Time
+	location, _ := time.LoadLocation("America/Montreal")
+	t = time.Now().In(location)
+	p := Point{
+		MeasurementName: name,
+		Tags:            tags,
+		Fields:          fields,
+		Timestamp:       t,
+	}
+	return p
+}
 
 type Printer struct {
 	DropOriginal bool     `toml:"drop_original"`
 	Tag          []string `toml:"tag"`
 	Field        []string `toml:"field"`
-}
-
-type ParsedObj struct {
-	Name string
-	duration string
-	metric string
-	// total
-}
-
-type ProcessorMetric struct {
-	Tags []telegraf.Tag
-	Fields []telegraf.Field
-}
-
-func (m *ProcessorMetric) addTag(key, value string) {
-	m.Tags = append(m.Tags, telegraf.Tag{Key: key, Value: value})
-}
-
-func (m *ProcessorMetric) addField(key string, value interface{}) {
-	m.Fields = append(m.Fields, telegraf.Field{Key: key, Value: value})
 }
 
 var sampleConfig = `
@@ -51,65 +56,56 @@ func (p *Printer) Description() string {
 
 func (p *Printer) Apply(in ...telegraf.Metric) []telegraf.Metric {
 
-	//var metrics [] telegraf.Metric
 	metrics := in[0]
+	var points []Point
 	for _, kafkaInput := range in {
-
-		p.makeMetrics(kafkaInput)
+		points = p.makePoints(kafkaInput)
 		//p.showMetrics(kafkaInput)
-		//for k, _ := range kafkaInput.Fields() {
-		//	kafkaInput.RemoveField(k)
-		//	kafkaInput.AddField("duration-diff", "37")
-		//}
-		//fmt.Println(kafkaInput)
 	}
 
+	in = nil
+
+	for _, point := range points {
+		newMetric, _ := metric.New(point.MeasurementName, point.Tags, point.Fields, point.Timestamp)
+		in = append(in, newMetric)
+	}
 	fmt.Println(metrics)
+
+	fmt.Println("------------------")
+	fmt.Println("Len of points: " + string(len(in)))
+	for _, v := range in {
+		fmt.Println(v)
+	}
+
+	fmt.Println("...........")
+
 	return in
 }
 
-func (p *Printer) makeMetrics(kafkaInput telegraf.Metric) {
+func (p *Printer) makePoints(kafkaInput telegraf.Metric) []Point {
 
-	tempHolder := ProcessorMetric{}
+	points := []Point{}
+	var total interface{}
 
+	host, _ := kafkaInput.GetTag("host")
 	for k, v := range kafkaInput.Fields() {
-
-
-
-		tag := telegraf.Tag{Key: "metric", Value: k}
-		field := telegraf.Field{Key: "duration-diff", Value: v}
-
-		//kafkaInput.AddTag("metric", k)
-		//kafkaInput.AddField("duration-diff", v)
-
-		tempHolder.Tags = append(tempHolder.Tags, tag)
-		tempHolder.Fields = append(tempHolder.Fields, field)
-
-		// append metric obj to array
-
-
-		//fmt.Println("Removing...: " + k)
-		//kafkaInput.AddTag("metric", k)
-		//kafkaInput.AddField("duration-diff", v)
-
-		//kafkaInput.RemoveField(k)
-		//fmt.Println("--------------")
+		if strings.Contains(k, "Metrics") {
+			if strings.Contains(k, "eb/total") {
+				total = v
+			} else {
+				parsedKey := strings.TrimPrefix(k, "Metrics_")
+				newPoint := NewPoint("request_timing", map[string]string{"metric": parsedKey, "host": host}, map[string]interface{}{"duration-diff": v, "total": total}, time.Time{}) //todo
+				points = append(points, newPoint)
+			}
+		}
 	}
 
-	fmt.Println("+++++++++++++++++")
-	for k,v := range tempHolder.Tags {
-		fmt.Println("///////")
-		fmt.Println(k)
+	for _, v := range points {
 		fmt.Println(v)
-		fmt.Println("///////")
-	}
-	for k,v := range tempHolder.Fields {
-		fmt.Println("///---////")
-		fmt.Println(k)
-		fmt.Println(v)
-		fmt.Println("///---////")
+		fmt.Println("^^^^^^")
 	}
 
+	return points
 }
 func (p *Printer) showMetrics(metric telegraf.Metric) {
 	for k, v := range metric.Fields() {
